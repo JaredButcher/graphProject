@@ -149,22 +149,35 @@ def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreash
     for edge in weightedGraph:
         snapWeightedGraph.AddEdge(edge[0], edge[1])
     print("Clustering weighted graph")
-    components = snap.TCnComV()
-    print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, components)}\nComponet sizes: ')
-    for comp in components:
+    catagoryNodes = snap.TCnComV()
+    print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, catagoryNodes)}\nComponet sizes: ')
+    for comp in catagoryNodes:
         if comp.Len() > 2:
             print(f'{len(comp)},', end='')
-    print(f'\ntotal {len(components)}')
-    
+    print(f'\ntotal {len(catagoryNodes)}')
     
     #Make new graph, nodes corisponding to clusters in weightedGraph
-    #Made edges in this new graph containing a symptom and weight
+    ##Made edges in this new graph containing a symptom and weight
     ##Nodes will have a list of nodes from base graph that are contained within the cluster
     ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
+    catagoryEdges = []
+    #TODO
+    #For each origional edge, make or take a directional edge in both directions from the clusters containing the nodes
+    ##And increment a counter, ignore interal edges
+    ## 1. Make vector from node to cluster
+    ## 2. Store edges in vector of unordered maps indexed by symptom
+    #Then for each catagoryEdge, calculate its weight
+    
+    
     #Save and return
-    return None
+    ##TODO Store which nodes belong to each cluster, csv without columns
+    ## Store catagory edges as normal
+    return catagoryEdges, catagoryNodes
 
 def main():
     edges, nodeList, edgeList = loadBaseGraph()
     weightedGraph = genWeightedGraph(edges, nodeList, 8)
-    catagorizationGraph = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, 0.45)
+    catagoryEdges, catagoryNodes = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, 0.45)
+    #TODO Create a function that compares a new graph's node to the catagory graph
+    ## Similar to current weight function, run between new node and each catagory
+    ## Predicted symptoms are weighted by both its weight in catagory graph and the drugs weight to the catagory
