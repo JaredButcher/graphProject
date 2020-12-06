@@ -9,6 +9,8 @@ import ctypes
 import itertools
 
 def loadBaseGraph(rebuild=False):
+    '''Loads in the needed files, generatres more useable formats if they don't exist
+    '''
     filename = './ChChSe-Decagon_polypharmacy.csv'
     nodeListfilename = './nodelist.csv'
     edgefilename = './edges.csv'
@@ -77,21 +79,25 @@ def loadBaseGraph(rebuild=False):
         for entry in open(edgeListfilename, 'r'):
             edgeList.append(entry)
 
+    return (edges, nodeList, edgeList)
+
+#Will proably take about  hours to run
+def genWeightedGraph(edges, nodeList, threads = 1):
+    '''Generates a complete graph of the drug nodes and the edges storing weights from 0-1 
+        representing how similar their common symptom interactions are.
+        Will take about 30 min / threads to run with on a desktop processor
+    '''
+    weightedGraphFilename = "weighted.csv"
+
+    nodeCount = len(nodeList)
+    edgeCount = len(edges)
+
+    print("Converting edges to c array")
     arrayEdges = (ctypes.c_int32 * (3 * edgeCount))(*itertools.chain(*edges))
     print("Edge array constructred")
 
-    return (arrayEdges, edgeCount, nodeList, edgeList)
-
-#Will proably take about 2 hours to run
-def genWeightedGraph(threads = 10):
-    weightedGraphFilename = "weighted.csv"
-
-    edges, edgeCount, nodeList, edgeList = loadBaseGraph()
-    #baseGraph = snap.LoadEdgeList_PUndirNet('edges.csv', 0, 1, ',')
-    nodeCount = len(nodeList)
-
     print("Constructing nodeEdgeVector")
-    nodeEdgeVector = accel.buildNodeEdgeVector(nodeCount, edgeCount, edges)
+    nodeEdgeVector = accel.buildNodeEdgeVector(nodeCount, edgeCount, arrayEdges)
     print("NodeEdgeVector constructed, building weighted graph")
 
     subGraphs = []
@@ -109,7 +115,9 @@ def genWeightedGraph(threads = 10):
         for result in executor.map(runBuildWeightGraph, range(0,threads)):
             pass
 
+    print("Converting into python friendly format")
     weightedGraph = accel.mergeWeightGraphs(subGraphs)
+    print("Complete")
 
     print("Weighted Graph built, writeing to file")
     with open("weight.csv", "w") as weightFile:
@@ -117,5 +125,27 @@ def genWeightedGraph(threads = 10):
             weightFile.write(f'{str(entry[0])},{str(entry[1])},{str(entry[2])}\n')
     print("Complete")
 
+    return weightedGraph
+
+def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist):
+    '''Use weighted graph to cluster nodes and generate a new catagorization graph.
+        Nodes with the weight between them close to 1 should be clustered together. 
+        A single node may be part of multiple clusters. 
+        The nodes on this catagorization graph represent the clusters in the weighted graph.
+        The catagorization graph will have multiple edges between nodes.
+        These edges are directed and will store a symptom and a chariteristic weight.
+        For an edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
+    '''
+    #Perge edges in weightedGraph below threashold
+    #Cluster weightedGraph
+    #Make new graph, nodes corisponding to clusters in weightedGraph
+    #Made edges in this new graph containing a symptom and weight
+    ##Nodes will have a list of nodes from base graph that are contained within the cluster
+    ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
+    #Save and return
+    return None
+
 def main():
-    genWeightedGraph()
+    edges, nodeList, edgeList = loadBaseGraph()
+    weightedGraph = genWeightedGraph(edges, nodeList, 10)
+    catagorizationGraph = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList)

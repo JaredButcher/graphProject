@@ -169,7 +169,7 @@ static PyObject* buildWeightGraph(PyObject *self, PyObject *args){
             weightGraph->push_back(WeightEdge(i, j, weight(i, j, *nodeEdgeVector)));
         }
         if(threadNum == 0){
-            std::cout << "\r" << ((double)i / nodeCount) * 100 << "% complete" << std::flush;
+            std::cout << "\rThread 0 " << ((double)i / nodeCount) * 100 << "% complete" << std::flush;
         }
     }
     if(threadNum == 0){
