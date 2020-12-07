@@ -78,6 +78,9 @@ def loadBaseGraph(snapFilename='./ChChSe-Decagon_polypharmacy.csv', nodeListfile
 
     return (edges, nodeList, edgeList)
 
+def listOfListsToCArray(iterable, subListSize):
+    return (ctypes.c_int32 * (subListSize * len(iterable)))(*itertools.chain(*iterable))
+
 #Will proably take about  hours to run
 def genWeightedGraph(edges, nodeList, threads = 1, weightedGraphFilename = "weighted.csv", rebuild=False):
     '''Generates a complete graph of the drug nodes and the edges storing weights from 0-1 
@@ -91,7 +94,7 @@ def genWeightedGraph(edges, nodeList, threads = 1, weightedGraphFilename = "weig
         edgeCount = len(edges)
 
         print("Converting edges to c array")
-        arrayEdges = (ctypes.c_int32 * (3 * edgeCount))(*itertools.chain(*edges))
+        arrayEdges = listOfListsToCArray(edges, 3)
         print("Edge array constructred")
 
         print("Constructing nodeEdgeVector")
@@ -130,7 +133,7 @@ def genWeightedGraph(edges, nodeList, threads = 1, weightedGraphFilename = "weig
 
     return weightedGraph
 
-def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2):
+def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2, catagoryNodeFilename='catagorynodes.csv', catagoryEdgeFilename='catagoryedges.csv'):
     '''Use weighted graph to cluster nodes and generate a new catagorization graph.
         Nodes with the weight between them close to 1 should be clustered together. 
         A single node may be part of multiple clusters. 
@@ -156,21 +159,39 @@ def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreash
             print(f'{len(comp)},', end='')
     print(f'\ntotal {len(catagoryNodes)}')
     
+    print("Converting origional edges to c array")
+    arrayOrigionalEdges = listOfListsToCArray(edges, 3)
+    print("Edge array constructred")
+
+    pyCatagoryNodes = []
+
+    for cat in catagoryNodes:
+        temp = []
+        for node in cat:
+            temp.append(node)
+        pyCatagoryNodes.append(temp)
+
     #Make new graph, nodes corisponding to clusters in weightedGraph
     ##Made edges in this new graph containing a symptom and weight
     ##Nodes will have a list of nodes from base graph that are contained within the cluster
     ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
-    catagoryEdges = []
-    #TODO
-    #For each origional edge, make or take a directional edge in both directions from the clusters containing the nodes
-    ##And increment a counter, ignore interal edges
-    ## 1. Make vector from node to cluster
-    ## 2. Store edges in vector of unordered maps indexed by symptom
-    #Then for each catagoryEdge, calculate its weight
-    
-    
+    print("Buiding catagory edges")
+    catagoryEdges = accel.buildCatagoryGraph(pyCatagoryNodes, arrayOrigionalEdges, len(edges), len(nodelist))
+    print("Catagory edges built")
+
     #Save and return
-    ##TODO Store which nodes belong to each cluster, csv without columns
+    print("Saving catagory nodes")
+    with open(catagoryNodeFilename, 'w') as nodeFile:
+        for catagory in catagoryNodes:
+            for node in catagory:
+                nodeFile.write(f'{str(node)},')
+            nodeFile.write('\n')
+    
+    print("Saving catagory edges")
+    with open(catagoryEdgeFilename, 'w') as edgeFile:
+        for edge in catagoryEdges:
+            edgeFile.write(f'{str(edge[0])},{str(edge[1])},{str(edge[2])},{str(edge[3])}\n')
+
     ## Store catagory edges as normal
     return catagoryEdges, catagoryNodes
 

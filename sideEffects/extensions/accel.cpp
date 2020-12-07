@@ -7,69 +7,8 @@
 #include <list>
 #include <set>
 #include <iterator>
-
-//About 10% faster
-static PyObject *edgeComp(PyObject *self, PyObject *args){
-    PyObject *edge1, *edge2;
-    PyArg_ParseTuple(args, "OO", &edge1, &edge2);
-
-    int e1_node1, e1_node2;
-    char* e1_sideEffect, trash;
-    PyArg_ParseTuple(edge1, "iiss", &e1_node1, &e1_node2, &e1_sideEffect, &trash);
-
-    int e2_node1, e2_node2;
-    char* e2_sideEffect;
-    PyArg_ParseTuple(edge2, "iiss", &e2_node1, &e2_node2, &e2_sideEffect, &trash);
-
-    return Py_BuildValue("O", e1_node1 == e2_node1 || e1_node1 == e2_node2 || e1_node2 == e2_node1 || e1_node2 == e2_node2 ? Py_True : Py_False);
-}
-
-//Currently using incorrect method
-static PyObject *weight(PyObject *self, PyObject *args){
-    int node1, node2;
-    PyObject* nodeEdgeVector;
-    if (!PyArg_ParseTuple(args, "iiO", &node1, &node2, &nodeEdgeVector)) {
-      return NULL;
-    }
-
-    PyObject* node1Edges = PyList_GetItem(nodeEdgeVector, node1);
-    PyObject* node2Edges = PyList_GetItem(nodeEdgeVector, node2);
-
-    int node1Len = static_cast<int>(PyList_Size(node1Edges));
-    int node2Len = static_cast<int>(PyList_Size(node2Edges));
-
-    int weight = 0;
-
-    for(int i = 0; i < node1Len; ++i){
-        for(int j = 0; j < node2Len; ++j){
-            PyObject* edge1 = PyList_GetItem(node1Edges, i);
-            PyObject* edge2 = PyList_GetItem(node2Edges, j);
-
-            int e1_node1, e1_node2;
-            char* e1_sideEffect, trash;
-            if(!PyArg_ParseTuple(edge1, "iiss", &e1_node1, &e1_node2, &e1_sideEffect, &trash)){
-                return NULL;
-            }
-
-            int e2_node1, e2_node2;
-            char* e2_sideEffect;
-            if(!PyArg_ParseTuple(edge2, "iiss", &e2_node1, &e2_node2, &e2_sideEffect, &trash)){
-                return NULL;
-            }
-            if(strcmp(e1_sideEffect, e2_sideEffect) == 0 && (e1_node1 == e2_node1 || e1_node1 == e2_node2 || e1_node2 == e2_node1 || e1_node2 == e2_node2)){
-                ++weight;
-                break;
-            }
-        }
-    }
-
-    double total = node1Len + node2Len;
-    if(total == 0){
-        total = 1;
-    }
-
-    return Py_BuildValue("d", (double)weight / total);
-}
+#include <utility>
+#include <string>
 
 //(nodeCount, edgeCount, edges)
 static PyObject *buildNodeEdgeVector(PyObject *self, PyObject *args){
@@ -141,6 +80,13 @@ static double weight(int node1, int node2, std::vector<std::unordered_map<int, s
     return (double)equalEdges / (total > 0 ? total : 1);
 }
 
+static void fillNodeSymptomCatagory(int symptom, std::unordered_map<int, std::set<int>> &symptomCatagoryMap, std::list<int> &catagories){
+    for(auto i = catagories.begin(); i != catagories.end(); ++i){
+        symptomCatagoryMap.try_emplace(symptom, std::set<int>());
+        symptomCatagoryMap[symptom].insert(*i);
+    }
+}
+
 struct WeightEdge{
     int n1;
     int n2;
@@ -198,18 +144,87 @@ static PyObject* mergeWeightGraphs(PyObject *self, PyObject *args){
     return sumWeightGraph;
 }
 
+static PyObject* buildCatagoryGraph(PyObject *self, PyObject* args){
+    PyObject *catagoryNodes;
+    Py_buffer originalEdgeArray;
+    int nodeCount, edgeCount;
+    if (!PyArg_ParseTuple(args, "Oy*ii", &catagoryNodes, &originalEdgeArray, &edgeCount, &nodeCount)) {
+        PyErr_SetString(PyExc_RuntimeError, "buildCatagoryGraph incorrect arguments");
+        return NULL;
+    }
+
+    //Create the vector of nodes that each have a list of clusters they are a part of
+    auto nodeToCatagory = std::vector<std::list<int>>();
+    int catagoryCount = static_cast<int>(PyList_Size(catagoryNodes));
+    std::generate_n(std::inserter(nodeToCatagory, nodeToCatagory.end()), nodeCount, [](){
+        return std::list<int>();
+    });
+    for(int i = 0; i < catagoryCount; ++i){
+        PyObject *catNodeList = PyList_GetItem(catagoryNodes, i);
+        for(int j = 0; j < PyList_Size(catNodeList); ++j){
+            nodeToCatagory[PyLong_AsLong(PyList_GetItem(catNodeList, j))].push_back(i);
+        }
+    }
+
+    //For each node, find clusters it shares a symptom edge with
+    //Vector of nodes with map of symptoms with a set of clusteres
+    auto nodeSymptomCatagory = std::vector<std::unordered_map<int, std::set<int>>>();
+    int* origionalEdges = static_cast<int*>(originalEdgeArray.buf);
+    std::generate_n(std::inserter(nodeSymptomCatagory, nodeSymptomCatagory.end()), nodeCount, [](){
+        return std::unordered_map<int, std::set<int>>();
+    });
+    for(int i = 0; i < edgeCount; ++i){
+        fillNodeSymptomCatagory(origionalEdges[i * 3 + 2], nodeSymptomCatagory[origionalEdges[i * 3]], nodeToCatagory[origionalEdges[i * 3 + 1]]);
+        fillNodeSymptomCatagory(origionalEdges[i * 3 + 2], nodeSymptomCatagory[origionalEdges[i * 3 + 1]], nodeToCatagory[origionalEdges[i * 3]]);
+    }
+
+    //Count the edges between clusters as vector of clusters each with a map of symptom to number of occurances, diretional
+    //Vector of clusters with map of symptoms with map of clusters with number of (unique nodes with edges with symptom to the cluster)
+    auto catagoryEdgeCounts = std::vector<std::unordered_map<int, std::unordered_map<int, int>>>();
+    std::generate_n(std::inserter(catagoryEdgeCounts, catagoryEdgeCounts.end()), catagoryCount, [](){
+        return std::unordered_map<int, std::unordered_map<int, int>>();
+    });
+    //For each node
+    for(int i = 0; i < nodeCount; ++i){
+        //For each cluster that node is in
+        for(auto iCat = nodeToCatagory[i].begin(); iCat != nodeToCatagory[i].end(); ++iCat){
+            //For each symptom that node has an edge with
+            for(auto iSymp = nodeSymptomCatagory[i].begin(); iSymp != nodeSymptomCatagory[i].end(); ++iSymp){
+                catagoryEdgeCounts[*iCat].try_emplace(iSymp->first, std::unordered_map<int, int>());
+                //For each cluster the node has an edge of said symptom to
+                for(auto iDSympCat = iSymp->second.begin(); iDSympCat != iSymp->second.end(); ++iDSympCat){
+                    catagoryEdgeCounts[*iCat][iSymp->first].try_emplace(*iDSympCat, 0);
+                    catagoryEdgeCounts[*iCat][iSymp->first][*iDSympCat] += 1;
+                }
+            }
+        }
+    }
+
+    //Calculate weights and convert back to python friendly format
+    PyObject* catagoryEdges = PyList_New(0);
+    for(int i = 0; i < catagoryCount; ++i){
+        double iNodeCount = static_cast<double>(PyList_Size(PyList_GetItem(catagoryNodes, i)));
+        for(auto iSymp = catagoryEdgeCounts[i].begin(); iSymp != catagoryEdgeCounts[i].end(); ++iSymp){
+            for(auto desCat = iSymp->second.begin(); desCat != iSymp->second.end(); ++desCat){
+                PyList_Append(catagoryEdges, Py_BuildValue("(iiid)", i, desCat->first, iSymp->first, (double)desCat->second / iNodeCount));
+            }
+        }
+    }
+
+    PyBuffer_Release(&originalEdgeArray);
+    return catagoryEdges;
+}
+
 //Module defs
 static PyMethodDef accel_methods[] = {
-    {"weight",  weight, METH_VARARGS,
-     "Compute weight of simularity between nodes"},
-    {"edgeComp",  edgeComp, METH_VARARGS,
-     "Compare edges"},
     {"buildNodeEdgeVector",  buildNodeEdgeVector, METH_VARARGS,
      "Build a vector of dictionaries of edges keyed by symptom \n(nodeCount, edgeCount, edges)"},
     {"buildWeightGraph",  buildWeightGraph, METH_VARARGS,
      "Build the weight graph, supports theading \n(nodeEdgeVector, threadNum=0, threads=1)"},
     {"mergeWeightGraphs",  mergeWeightGraphs, METH_VARARGS,
      "Merge list of weight subgraphs \n(graphs)"},
+    {"buildCatagoryGraph",  buildCatagoryGraph, METH_VARARGS,
+     "Create the catagory graph \n(catagoryNodes, originalEdgeArray, edgeCount, nodeCount)"},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
