@@ -135,7 +135,82 @@ def genWeightedGraph(edges, nodeList, threads = 1, weightedGraphFilename = "weig
 
     return weightedGraph
 
-def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2, catagoryNodeFilename='catagorynodes.csv', catagoryEdgeFilename='catagoryedges.csv', rebuild=False):
+#From https://stackoverflow.com/questions/13904636/implementing-bron-kerbosch-algorithm-in-python
+def bronKerbosch(graph, P, R=None, X=None):
+    P = set(P)
+    R = set() if R is None else R
+    X = set() if X is None else X
+    if not P and not X:
+        yield R
+    try:
+        u = random.choice(list(P.union(X)))
+        S = P.difference(graph[u])
+    # if union of P and X is empty
+    except IndexError:
+        S = P
+    for v in S:
+        yield from bronKerbosch(
+            graph, P=P.intersection(graph[v]), R=R.union([v]), X=X.intersection(graph[v]))
+        P.remove(v)
+        X.add(v)
+
+def runBronKerbosch(nodelist, weightedGraph):
+    graph = {}
+    for i in range(0,len(nodelist)):
+        graph[i] = set()
+    for edge in weightedGraph:
+        graph[edge[0]].add(edge[1])
+        graph[edge[1]].add(edge[0])
+
+    return [list(cat) for cat in list(bronKerbosch(graph, graph.keys()))]   
+
+def runCNM(nodelist, weightedGraph):
+    print("Building snap graph")
+    snapWeightedGraph = snap.TUNGraph_New(len(nodelist), len(weightedGraph))
+    for i in range(0, len(nodelist)):
+        snapWeightedGraph.AddNode(i)
+    for edge in weightedGraph:
+        snapWeightedGraph.AddEdge(edge[0], edge[1])
+    print("Clustering weighted graph")
+    catagoryNodes = snap.TCnComV()
+    print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, catagoryNodes)}')
+    return [[node for node in cat] for cat in catagoryNodes]
+
+def runUniqueMaxCliques(nodelist, weightedGraph, mergeFactor=.25):
+    #Construct list of adj, include self
+    adjList = [set([i]) for i in range(0,len(nodelist))]
+    for edge in weightedGraph:
+        adjList[edge[0]].add(edge[1])
+        adjList[edge[1]].add(edge[0])
+
+    #For each node, first largest find clique, all cliques in end result are unique
+    cliques = set()
+    for nodeSet in adjList:
+        largestSet = set()
+        largestSetSize = 0
+        for adjNode in nodeSet:
+            challangeSet = nodeSet & adjList[adjNode]
+            if len(challangeSet) > largestSetSize:
+                largestSet = challangeSet
+        cliques.add(frozenset(largestSet))
+
+    mergeCliques = set()
+    for clique in cliques:
+        intersectClique = None
+        replaced = False
+        for compClique in mergeCliques:
+            intersectClique = clique | compClique
+            if len(intersectClique) * mergeFactor < len(clique) and len(intersectClique) * mergeFactor < len(compClique):
+                mergeCliques.remove(compClique)
+                mergeCliques.add(frozenset(intersectClique))
+                replaced = True
+                break
+        if not replaced: mergeCliques.add(clique)
+        
+    #Return as list of lists instead of set of sets
+    return [list(clique) for clique in mergeCliques]
+
+def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2, catagoryNodeFilename='catagorynodes.csv', catagoryEdgeFilename='catagoryedges.csv', rebuild=False, clusterFunct=runUniqueMaxCliques):
     '''Use weighted graph to cluster nodes and generate a new catagorization graph.
         Nodes with the weight between them close to 1 should be clustered together. 
         A single node may be part of multiple clusters. 
@@ -148,48 +223,32 @@ def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreash
         print("Purgeing edges between weakly related nodes")
         weightedGraph = [x for x in weightedGraph if x[2] > weightThreashold]
 
-        print("Building snap graph")
-        snapWeightedGraph = snap.TUNGraph_New(len(nodelist), len(weightedGraph))
-        for i in range(0, len(nodelist)):
-            snapWeightedGraph.AddNode(i)
-        for edge in weightedGraph:
-            snapWeightedGraph.AddEdge(edge[0], edge[1])
-        print("Clustering weighted graph")
-        catagoryNodes = snap.TCnComV()
-        print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, catagoryNodes)}\nComponet sizes: ')
-        for comp in catagoryNodes:
-            if comp.Len() > 2:
-                print(f'{len(comp)},', end='')
-        print(f'\ntotal {len(catagoryNodes)}')
+        catagoryNodes = clusterFunct(nodelist, weightedGraph)
         
+        sizes = [len(cat) for cat in catagoryNodes if len(cat) > 2]
+        sizes.sort(reverse=True)
+        print(f'Componet sizes: {sizes}')
+        print(f'total {len(catagoryNodes)}')
+
         print("Converting origional edges to c array")
         arrayOrigionalEdges = listOfListsToCArray(edges, 3)
         print("Edge array constructred")
-
-        pyCatagoryNodes = []
-
-        for cat in catagoryNodes:
-            temp = []
-            for node in cat:
-                temp.append(node)
-            pyCatagoryNodes.append(temp)
 
         #Make new graph, nodes corisponding to clusters in weightedGraph
         ##Made edges in this new graph containing a symptom and weight
         ##Nodes will have a list of nodes from base graph that are contained within the cluster
         ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
         print("Buiding catagory edges")
-        catagoryEdges = accel.buildCatagoryGraph(pyCatagoryNodes, arrayOrigionalEdges, len(edges), len(nodelist))
+        catagoryEdges = accel.buildCatagoryGraph(catagoryNodes, arrayOrigionalEdges, len(edges), len(nodelist))
         print("Catagory edges built")
 
         #Save and return
         print("Saving catagory nodes")
         with open(catagoryNodeFilename, 'w') as nodeFile:
             for catagory in catagoryNodes:
-                tempcat = [node for node in catagory]
-                for node in tempcat[:-1]:
+                for node in catagory[:-1]:
                     nodeFile.write(f'{str(node)},')
-                nodeFile.write(f'{str(tempcat[-1])}\n')
+                nodeFile.write(f'{str(catagory[-1])}\n')
         
         print("Saving catagory edges")
         with open(catagoryEdgeFilename, 'w') as edgeFile:
@@ -206,9 +265,14 @@ def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreash
         print("Loading catagory edges")
         catagoryEdges = []
         with open(catagoryEdgeFilename, 'r') as edgefile:
+            count = 0
             for entry in edgefile:
+                count += 1
                 values = entry.split(',')
                 catagoryEdges.append((int(values[0]), int(values[1]), int(values[2]), float(values[3])))
+                if not count % 100000:
+                    sys.stdout.write(f'\r{count} edges')
+        print("\nCatagory edges loaded")
 
     # Store catagory edges as normal
     return (catagoryNodes, catagoryEdges)
@@ -257,7 +321,7 @@ def testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, nodesToUse=Non
 def main():
     edges, nodeList, edgeList = loadBaseGraph()
     weightedGraph = genWeightedGraph(edges, nodeList, 8)
-    catagoryNodes, catagoryEdges = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, 0.45)
+    catagoryNodes, catagoryEdges = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, .6, rebuild=True, clusterFunct=runUniqueMaxCliques)
     testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, randomNodesToUse=3, edgeFraction=.5, cutoff=.2)
     #TODO Create a function that compares a new graph's node to the catagory graph
     ## Similar to current weight function, run between new node and each catagory

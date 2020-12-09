@@ -166,8 +166,8 @@ static PyObject* buildCatagoryGraph(PyObject *self, PyObject* args){
             nodeToCatagory[PyLong_AsLong(PyList_GetItem(catNodeList, j))].push_back(i);
         }
     }
-
-    //For each node, find clusters it shares a symptom edge with
+ 
+    //For each node,find clusters it shares a symptom edge with
     //Vector of nodes with map of symptoms with a set of clusteres
     auto nodeSymptomCatagory = std::vector<std::unordered_map<int, std::set<int>>>();
     int* origionalEdges = static_cast<int*>(originalEdgeArray.buf);
