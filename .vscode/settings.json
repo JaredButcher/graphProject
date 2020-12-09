@@ -46,6 +46,7 @@
         "xutility": "cpp",
         "set": "cpp",
         "cctype": "cpp",
-        "string": "cpp"
+        "string": "cpp",
+        "numeric": "cpp"
     }
 }

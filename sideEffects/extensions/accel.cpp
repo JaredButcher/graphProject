@@ -9,6 +9,7 @@
 #include <iterator>
 #include <utility>
 #include <string>
+#include <numeric>
 
 //(nodeCount, edgeCount, edges)
 static PyObject *buildNodeEdgeVector(PyObject *self, PyObject *args){
@@ -215,6 +216,124 @@ static PyObject* buildCatagoryGraph(PyObject *self, PyObject* args){
     return catagoryEdges;
 }
 
+static PyObject* preprocessCatagories(PyObject* self, PyObject* args){
+    PyObject *catagoryNodes, *catagoryEdges;
+    if (!PyArg_ParseTuple(args, "OO", &catagoryNodes, &catagoryEdges)) {
+        PyErr_SetString(PyExc_RuntimeError, "preprocessCatagories incorrect arguments");
+        return NULL;
+    }
+
+    //Vector of nodes containing list of catagories
+    int catCount = static_cast<int>(PyList_Size(catagoryNodes));
+    auto nodes = new std::unordered_map<int, std::list<int>>();
+    for(int i = 0; i < catCount; ++i){
+        PyObject* catNodes = PyList_GetItem(catagoryNodes, i);
+        for(int j = 0; j < PyList_Size(catNodes); ++j){
+            int node = static_cast<int>(PyLong_AsLong(PyList_GetItem(catNodes, j)));
+            nodes->try_emplace(node, std::list<int>());
+            (*nodes)[node].push_back(i);
+        }
+    }
+    PyObject* capCatNodes = PyCapsule_New((void*)nodes, "catNodesPtr", NULL);
+    PyCapsule_SetPointer(capCatNodes, (void*)nodes);
+
+    //Vector of catagories containing map of dest catagories containing map of symptoms to weight
+    auto edges = new std::vector<std::unordered_map<int, std::unordered_map<int, double>>>();
+    std::generate_n(std::inserter(*edges, edges->end()), catCount, [](){
+        return std::unordered_map<int, std::unordered_map<int, double>>();
+    });
+    int edgeCount = static_cast<int>(PyList_Size(catagoryEdges));
+    for(int i = 0; i < edgeCount; ++i){
+        int source, destination, symptom;
+        double weight;
+        PyArg_ParseTuple(PyList_GetItem(catagoryEdges, i), "iiid", &source, &destination, &symptom, &weight);
+        (*edges)[source].try_emplace(destination, std::unordered_map<int, double>());
+        (*edges)[source][destination][symptom] = weight;
+    }
+    PyObject* capCatEdges = PyCapsule_New((void*)edges, "catEdgesPtr", NULL);
+    PyCapsule_SetPointer(capCatEdges, (void*)edges);
+
+    return Py_BuildValue("OO", capCatNodes, capCatEdges);
+}
+
+static PyObject* predictSymptoms(PyObject* self, PyObject* args){
+    PyObject *newEdges, *preNodes, *preEdges, *catagoryNodes;
+    double minWeight;
+    if (!PyArg_ParseTuple(args, "OOOOd", &newEdges, &preNodes, &preEdges, &catagoryNodes, &minWeight)) {
+        PyErr_SetString(PyExc_RuntimeError, "predictSymptoms incorrect arguments");
+        return NULL;
+    }
+    auto catNodes = static_cast<std::unordered_map<int, std::list<int>>*>(PyCapsule_GetPointer(preNodes, "catNodesPtr"));
+    auto catEdges = static_cast<std::vector<std::unordered_map<int, std::unordered_map<int, double>>>*>(PyCapsule_GetPointer(preEdges, "catEdgesPtr"));
+
+    //Convert the drug to drug edges to drug to cluster
+    auto clusterEdges = std::set<std::pair<int,int>>();
+    int newEdgeCount = static_cast<int>(PyList_Size(newEdges));
+    for(int i = 0; i < newEdgeCount; ++i){
+        int src, dest, symp;
+        PyArg_ParseTuple(PyList_GetItem(newEdges, i), "iii", &src, &dest, &symp);
+        for(auto cat = (*catNodes)[dest].begin(); cat != (*catNodes)[dest].end(); ++cat){
+            clusterEdges.insert(std::make_pair(*cat, symp));
+        }
+    }
+
+    //Find potental symptoms
+    PyObject* predictedEdges = PyList_New(0);
+    int newClusterEdgeCount = static_cast<int>(clusterEdges.size());
+    int catCount = static_cast<int>(PyList_Size(catagoryNodes));
+    //For each catagory
+    for(int cat = 0; cat < catCount; ++cat){
+        //Get number of outgoing edges in catagory
+        int catEdgeCount = std::accumulate((*catEdges)[cat].begin(), (*catEdges)[cat].end(), 0, [](const int& acc, const auto& dest){
+            return acc + static_cast<int>(dest.second.size());
+        });
+        //Count the similar edges and calculate drug to catagory similarity weight
+        int similarEdgeCount = 0;
+        for(auto edge = clusterEdges.begin(); edge != clusterEdges.end(); ++edge){
+            if(edge->first == cat || (*catEdges)[cat].find(edge->first) != (*catEdges)[cat].end() && (*catEdges)[cat][edge->first].find(edge->second) != (*catEdges)[cat][edge->first].end()){
+                similarEdgeCount += 2;
+            }
+        }
+        double weight = (double)similarEdgeCount / (double)(catEdgeCount + newClusterEdgeCount);
+        if(weight >= minWeight){
+            //For each outgoing edge, see it is aboe the min weight and add it to prediction
+            for(auto destCat = (*catEdges)[cat].begin(); destCat != (*catEdges)[cat].end(); ++destCat){
+                for(auto catSymp = destCat->second.begin(); catSymp != destCat->second.end(); ++catSymp){
+                    if(catSymp->second * weight >= minWeight && clusterEdges.find(std::make_pair(destCat->first, catSymp->first)) == clusterEdges.end()){
+                        PyList_Append(predictedEdges, Py_BuildValue("(iid)", destCat->first, catSymp->first, catSymp->second * weight));
+                    }
+                }
+            }
+        }
+    }
+
+    return predictedEdges;
+}
+
+static PyObject* findEdges(PyObject* self, PyObject* args){
+    PyObject *edges;
+    int node;
+    if (!PyArg_ParseTuple(args, "iO", &node, &edges)) {
+        PyErr_SetString(PyExc_RuntimeError, "findEdges incorrect arguments");
+        return NULL;
+    }
+
+    int edgeCount = static_cast<int>(PyList_Size(edges));
+    PyObject* nodeEdges = PyList_New(0);
+    for(int i = 0; i < edgeCount; ++i){
+        int sour, dest, symp;
+        if (!PyArg_ParseTuple(PyList_GetItem(edges, i), "iii", &sour, &dest, &symp)){
+            PyErr_SetString(PyExc_RuntimeError, "findEdges edge list incorrect");
+            return NULL;
+        }
+        if(sour == node || dest == node){
+            PyList_Append(nodeEdges, Py_BuildValue("(iii)", sour, dest, symp));
+        }
+    }
+
+    return nodeEdges;
+}
+
 //Module defs
 static PyMethodDef accel_methods[] = {
     {"buildNodeEdgeVector",  buildNodeEdgeVector, METH_VARARGS,
@@ -225,6 +344,12 @@ static PyMethodDef accel_methods[] = {
      "Merge list of weight subgraphs \n(graphs)"},
     {"buildCatagoryGraph",  buildCatagoryGraph, METH_VARARGS,
      "Create the catagory graph \n(catagoryNodes, originalEdgeArray, edgeCount, nodeCount)"},
+    {"preprocessCatagories",  preprocessCatagories, METH_VARARGS,
+     "Convert the catagory node and edge list into a faster c format \n(catagoryNodes, catagoryEdges)"},
+    {"predictSymptoms",  predictSymptoms, METH_VARARGS,
+     "Preditct the interdrug interaction symptoms of a partial graph \n(newEdges, preprocessedNodes, preprocessedEdges, catagoryNodes, minWeight)"},
+    {"findEdges",  findEdges, METH_VARARGS,
+     "Returns list of edges associated with node \n(node, edges)"},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

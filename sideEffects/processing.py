@@ -7,6 +7,8 @@ import concurrent.futures
 import threading
 import ctypes
 import itertools
+import random
+import math
 
 def loadBaseGraph(snapFilename='./ChChSe-Decagon_polypharmacy.csv', nodeListfilename = './nodelist.csv', edgefilename = './edges.csv', edgeListfilename = './edgelist.csv', rebuild=False):
     '''Loads in the needed files, generatres more useable formats if they don't exist
@@ -133,7 +135,7 @@ def genWeightedGraph(edges, nodeList, threads = 1, weightedGraphFilename = "weig
 
     return weightedGraph
 
-def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2, catagoryNodeFilename='catagorynodes.csv', catagoryEdgeFilename='catagoryedges.csv'):
+def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreashold = 0.2, catagoryNodeFilename='catagorynodes.csv', catagoryEdgeFilename='catagoryedges.csv', rebuild=False):
     '''Use weighted graph to cluster nodes and generate a new catagorization graph.
         Nodes with the weight between them close to 1 should be clustered together. 
         A single node may be part of multiple clusters. 
@@ -142,63 +144,121 @@ def clusterWeightedGraph(weightedGraph, edges, nodelist, edgelist, weightThreash
         These edges are directed and will store a symptom and a chariteristic weight.
         For an edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
     '''
-    print("Purgeing edges between weakly related nodes")
-    weightedGraph = [x for x in weightedGraph if x[2] > weightThreashold]
+    if rebuild or not os.path.exists(catagoryNodeFilename) or not os.path.exists(catagoryEdgeFilename):
+        print("Purgeing edges between weakly related nodes")
+        weightedGraph = [x for x in weightedGraph if x[2] > weightThreashold]
 
-    print("Building snap graph")
-    snapWeightedGraph = snap.TUNGraph_New(len(nodelist), len(weightedGraph))
-    for i in range(0, len(nodelist)):
-        snapWeightedGraph.AddNode(i)
-    for edge in weightedGraph:
-        snapWeightedGraph.AddEdge(edge[0], edge[1])
-    print("Clustering weighted graph")
-    catagoryNodes = snap.TCnComV()
-    print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, catagoryNodes)}\nComponet sizes: ')
-    for comp in catagoryNodes:
-        if comp.Len() > 2:
-            print(f'{len(comp)},', end='')
-    print(f'\ntotal {len(catagoryNodes)}')
+        print("Building snap graph")
+        snapWeightedGraph = snap.TUNGraph_New(len(nodelist), len(weightedGraph))
+        for i in range(0, len(nodelist)):
+            snapWeightedGraph.AddNode(i)
+        for edge in weightedGraph:
+            snapWeightedGraph.AddEdge(edge[0], edge[1])
+        print("Clustering weighted graph")
+        catagoryNodes = snap.TCnComV()
+        print(f'Mod: {snap.CommunityCNM(snapWeightedGraph, catagoryNodes)}\nComponet sizes: ')
+        for comp in catagoryNodes:
+            if comp.Len() > 2:
+                print(f'{len(comp)},', end='')
+        print(f'\ntotal {len(catagoryNodes)}')
+        
+        print("Converting origional edges to c array")
+        arrayOrigionalEdges = listOfListsToCArray(edges, 3)
+        print("Edge array constructred")
+
+        pyCatagoryNodes = []
+
+        for cat in catagoryNodes:
+            temp = []
+            for node in cat:
+                temp.append(node)
+            pyCatagoryNodes.append(temp)
+
+        #Make new graph, nodes corisponding to clusters in weightedGraph
+        ##Made edges in this new graph containing a symptom and weight
+        ##Nodes will have a list of nodes from base graph that are contained within the cluster
+        ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
+        print("Buiding catagory edges")
+        catagoryEdges = accel.buildCatagoryGraph(pyCatagoryNodes, arrayOrigionalEdges, len(edges), len(nodelist))
+        print("Catagory edges built")
+
+        #Save and return
+        print("Saving catagory nodes")
+        with open(catagoryNodeFilename, 'w') as nodeFile:
+            for catagory in catagoryNodes:
+                tempcat = [node for node in catagory]
+                for node in tempcat[:-1]:
+                    nodeFile.write(f'{str(node)},')
+                nodeFile.write(f'{str(tempcat[-1])}\n')
+        
+        print("Saving catagory edges")
+        with open(catagoryEdgeFilename, 'w') as edgeFile:
+            for edge in catagoryEdges:
+                edgeFile.write(f'{str(edge[0])},{str(edge[1])},{str(edge[2])},{str(edge[3])}\n')
+    else:
+        print("Loading catagory nodes")
+        catagoryNodes = []
+        with open(catagoryNodeFilename, 'r') as nodeFile:
+            for entry in nodeFile:
+                nodes = entry.split(',')
+                catagoryNodes.append([int(node) for node in nodes])
+
+        print("Loading catagory edges")
+        catagoryEdges = []
+        with open(catagoryEdgeFilename, 'r') as edgefile:
+            for entry in edgefile:
+                values = entry.split(',')
+                catagoryEdges.append((int(values[0]), int(values[1]), int(values[2]), float(values[3])))
+
+    # Store catagory edges as normal
+    return (catagoryNodes, catagoryEdges)
+
+def predictSymptoms(symptoms, catagoryNodes, catagoryEdges, preprocessedNodes=None, preprocessedEdges=None, cutoff=.2):
+    '''Symptoms in [(drug index, symptom index)] format
+    '''
+    if not preprocessedEdges or not preprocessedNodes:
+        print("Preprocessing")
+        preprocessedNodes, preprocessedEdges = accel.preprocessCatagories(catagoryNodes, catagoryEdges)
     
-    print("Converting origional edges to c array")
-    arrayOrigionalEdges = listOfListsToCArray(edges, 3)
-    print("Edge array constructred")
+    print("Predicting symptoms")
+    return accel.predictSymptoms(symptoms, preprocessedNodes, preprocessedEdges, cutoff)
 
-    pyCatagoryNodes = []
+def testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, nodesToUse=None, randomNodesToUse=10, edgeFraction=.5, cutoff=.2):
+    print("Finding random nodes")
+    nodes = []
+    trueEdgeSets = []
+    while len(nodes) < randomNodesToUse:
+        node = random.randrange(0, len(nodeList))
+        if not node in nodes:
+            nodeEdges = accel.findEdges(node, edges)
+            print(len(nodeEdges))
+            if(len(nodeEdges) > 20):
+                nodes.append(node)
+                trueEdgeSets.append(nodeEdges)
 
-    for cat in catagoryNodes:
-        temp = []
-        for node in cat:
-            temp.append(node)
-        pyCatagoryNodes.append(temp)
-
-    #Make new graph, nodes corisponding to clusters in weightedGraph
-    ##Made edges in this new graph containing a symptom and weight
-    ##Nodes will have a list of nodes from base graph that are contained within the cluster
-    ##for edge AB, the weight is the number of nodes in A that have an edge of the symptom to B divided by the number of nodes in A.
-    print("Buiding catagory edges")
-    catagoryEdges = accel.buildCatagoryGraph(pyCatagoryNodes, arrayOrigionalEdges, len(edges), len(nodelist))
-    print("Catagory edges built")
-
-    #Save and return
-    print("Saving catagory nodes")
-    with open(catagoryNodeFilename, 'w') as nodeFile:
-        for catagory in catagoryNodes:
-            for node in catagory:
-                nodeFile.write(f'{str(node)},')
-            nodeFile.write('\n')
+    print("Preprocessing")
+    preprocessedNodes, preprocessedEdges = accel.preprocessCatagories(catagoryNodes, catagoryEdges)
     
-    print("Saving catagory edges")
-    with open(catagoryEdgeFilename, 'w') as edgeFile:
-        for edge in catagoryEdges:
-            edgeFile.write(f'{str(edge[0])},{str(edge[1])},{str(edge[2])},{str(edge[3])}\n')
-
-    ## Store catagory edges as normal
-    return catagoryEdges, catagoryNodes
+    print("Predicting")
+    usedEdgeSets = []
+    predictedEdgeSets = []
+    for edgeSet in trueEdgeSets:
+        reducedSet = edgeSet[:math.floor(len(edgeSet) * edgeFraction)]
+        usedEdgeSets.append(reducedSet)
+        predictedSet = accel.predictSymptoms(reducedSet, preprocessedNodes, preprocessedEdges, catagoryNodes, cutoff)
+        predictedEdgeSets.append(predictedSet)
+        print(f'True edge set size: {len(edgeSet)}')
+        print(f'Reduced edge set size: {len(reducedSet)}')
+        print(f'Predicted edge set size: {len(predictedSet)}')
+        print(f'True edge set size divided by the sum of the Reduced and Predicted edge set size: {len(edgeSet) / (len(predictedSet) + len(reducedSet))}')
+    print("\nFinished")
+    
 
 def main():
     edges, nodeList, edgeList = loadBaseGraph()
     weightedGraph = genWeightedGraph(edges, nodeList, 8)
-    catagoryEdges, catagoryNodes = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, 0.45)
+    catagoryNodes, catagoryEdges = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, 0.45)
+    testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, randomNodesToUse=3, edgeFraction=.5, cutoff=.2)
     #TODO Create a function that compares a new graph's node to the catagory graph
     ## Similar to current weight function, run between new node and each catagory
     ## Predicted symptoms are weighted by both its weight in catagory graph and the drugs weight to the catagory
