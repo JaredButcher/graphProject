@@ -256,6 +256,28 @@ static PyObject* preprocessCatagories(PyObject* self, PyObject* args){
     return Py_BuildValue("OO", capCatNodes, capCatEdges);
 }
 
+static PyObject* drugEdgeToCatagory(PyObject* self, PyObject* args){
+    PyObject *edges, *preNodes;
+    if (!PyArg_ParseTuple(args, "OO", &edges, &preNodes)) {
+        PyErr_SetString(PyExc_RuntimeError, "drugEdgeToCatagory incorrect arguments");
+        return NULL;
+    }
+    auto catNodes = static_cast<std::unordered_map<int, std::list<int>>*>(PyCapsule_GetPointer(preNodes, "catNodesPtr"));
+
+    //Convert the drug to drug edges to drug to cluster
+    PyObject *clusterEdges = PyList_New(0);
+    int newEdgeCount = static_cast<int>(PyList_Size(edges));
+    for(int i = 0; i < newEdgeCount; ++i){
+        int src, dest, symp;
+        PyArg_ParseTuple(PyList_GetItem(edges, i), "iii", &src, &dest, &symp);
+        for(auto cat = (*catNodes)[dest].begin(); cat != (*catNodes)[dest].end(); ++cat){
+            PyList_Append(clusterEdges, Py_BuildValue("ii", *cat, symp));
+        }
+    }
+
+    return clusterEdges;
+}
+
 static PyObject* predictSymptoms(PyObject* self, PyObject* args){
     PyObject *newEdges, *preNodes, *preEdges, *catagoryNodes;
     double minWeight;
@@ -334,6 +356,46 @@ static PyObject* findEdges(PyObject* self, PyObject* args){
     return nodeEdges;
 }
 
+static PyObject* findAccuracy(PyObject* self, PyObject* args){
+    PyObject *predictedEdges, *trueEdges;
+    int node;
+    if (!PyArg_ParseTuple(args, "iOO", &node, &predictedEdges, &trueEdges)) {
+        PyErr_SetString(PyExc_RuntimeError, "findAccuracy incorrect arguments");
+        return NULL;
+    }
+
+    //Make the true edge set more searchable
+    auto trueEdgeMap = std::unordered_map<int, std::set<int>>();
+    Py_ssize_t trueEdgeLen = PyList_Size(trueEdges);
+    for(int i = 0; i < trueEdgeLen; ++i){
+        int sou, des, sym;
+        PyArg_ParseTuple(PyList_GetItem(trueEdges, i), "iii", &sou, &des, &sym);
+        trueEdgeMap.try_emplace(sym, std::set<int>());
+        (node == sou) ? trueEdgeMap[i].insert(des) : trueEdgeMap[i].insert(sou);
+    }
+
+    //For each predicted edge, see if it exists in the origional set
+    PyObject *accurate = PyList_New(0);
+    PyObject *inaccurate = PyList_New(0);
+    Py_ssize_t predictedEdgeLen = PyList_Size(predictedEdges);
+    for(int i = 0; i < predictedEdgeLen; ++i){
+        int des, sym;
+        double weight;
+        PyArg_ParseTuple(PyList_GetItem(predictedEdges, i), "iid", &des, &sym, &weight);
+        auto trueSymps = trueEdgeMap.find(sym);
+        if(trueSymps != trueEdgeMap.end()){
+            auto contains = trueSymps->second.find(des);
+            if(contains != trueSymps->second.end()){
+                PyList_Append(accurate, Py_BuildValue("d", weight));
+            }else{
+                PyList_Append(inaccurate, Py_BuildValue("d", weight));
+            }
+        }
+    }
+
+    return Py_BuildValue("OO", accurate, inaccurate);
+}
+
 //Module defs
 static PyMethodDef accel_methods[] = {
     {"buildNodeEdgeVector",  buildNodeEdgeVector, METH_VARARGS,
@@ -350,6 +412,10 @@ static PyMethodDef accel_methods[] = {
      "Preditct the interdrug interaction symptoms of a partial graph \n(newEdges, preprocessedNodes, preprocessedEdges, catagoryNodes, minWeight)"},
     {"findEdges",  findEdges, METH_VARARGS,
      "Returns list of edges associated with node \n(node, edges)"},
+    {"drugEdgeToCatagory",  drugEdgeToCatagory, METH_VARARGS,
+     "Takes list of edges from drug to drug and returns list of edges to catagories \n(edges, preprocessedNodes)"},
+    {"findAccuracy",  findAccuracy, METH_VARARGS,
+     "Takes the predicted and true edges returns two lists of accurate and inaccurate weights \n(node, predictedEdges, trueEdges)"},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

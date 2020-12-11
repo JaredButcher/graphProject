@@ -9,6 +9,8 @@ import ctypes
 import itertools
 import random
 import math
+import statistics
+import json
 
 def loadBaseGraph(snapFilename='./ChChSe-Decagon_polypharmacy.csv', nodeListfilename = './nodelist.csv', edgefilename = './edges.csv', edgeListfilename = './edgelist.csv', rebuild=False):
     '''Loads in the needed files, generatres more useable formats if they don't exist
@@ -287,7 +289,7 @@ def predictSymptoms(symptoms, catagoryNodes, catagoryEdges, preprocessedNodes=No
     print("Predicting symptoms")
     return accel.predictSymptoms(symptoms, preprocessedNodes, preprocessedEdges, cutoff)
 
-def testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, nodesToUse=None, randomNodesToUse=10, edgeFraction=.5, cutoff=.2):
+def testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, nodesToUse=None, randomNodesToUse=10, edgeFraction=.5, cutoff=.2, outfile='data.json'):
     print("Finding random nodes")
     nodes = []
     trueEdgeSets = []
@@ -295,34 +297,57 @@ def testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, nodesToUse=Non
         node = random.randrange(0, len(nodeList))
         if not node in nodes:
             nodeEdges = accel.findEdges(node, edges)
-            print(len(nodeEdges))
-            if(len(nodeEdges) > 20):
+            if(len(nodeEdges) > 50):
                 nodes.append(node)
                 trueEdgeSets.append(nodeEdges)
 
     print("Preprocessing")
     preprocessedNodes, preprocessedEdges = accel.preprocessCatagories(catagoryNodes, catagoryEdges)
     
+    data = []
     print("Predicting")
-    usedEdgeSets = []
-    predictedEdgeSets = []
-    for edgeSet in trueEdgeSets:
-        reducedSet = edgeSet[:math.floor(len(edgeSet) * edgeFraction)]
-        usedEdgeSets.append(reducedSet)
-        predictedSet = accel.predictSymptoms(reducedSet, preprocessedNodes, preprocessedEdges, catagoryNodes, cutoff)
-        predictedEdgeSets.append(predictedSet)
-        print(f'True edge set size: {len(edgeSet)}')
-        print(f'Reduced edge set size: {len(reducedSet)}')
-        print(f'Predicted edge set size: {len(predictedSet)}')
-        print(f'True edge set size divided by the sum of the Reduced and Predicted edge set size: {len(edgeSet) / (len(predictedSet) + len(reducedSet))}')
-    print("\nFinished")
+    count = 0
+    for k in range(1, 10):
+        edgeFraction = k / 10
+        for j in range(1, 9):
+            cutoff = j / 10
+            for i in range(0, len(nodes)):
+                count += 1
+                print(f'\rNode: {count}', end='')
+                edgeSet = trueEdgeSets[i]
+                reducedSet = edgeSet[:math.floor(len(edgeSet) * edgeFraction)]
+                predictedSet = accel.predictSymptoms(reducedSet, preprocessedNodes, preprocessedEdges, catagoryNodes, cutoff)
+                clusterEdgeSet = accel.drugEdgeToCatagory(edgeSet, preprocessedNodes)
+                accurateEdges, inaccurateEdges = accel.findAccuracy(nodes[i], predictedSet, edgeSet)
+                accurateEdgesLen = len(accurateEdges)
+                inaccurateEdgesLen = len(inaccurateEdges)
+                nodeData = {
+                    'node': nodes[i],
+                    'edgeFraction': edgeFraction,
+                    'cutoff': cutoff,
+                    'edgeCount': len(clusterEdgeSet),
+                    'predictedEdgeCount': len(predictedSet),
+                    'accurateEdgeCount': accurateEdgesLen, 
+                    'accurateEdgeMean': statistics.mean(accurateEdges) if accurateEdgesLen > 0 else 0,
+                    'accurateEdgeMedian': statistics.median(accurateEdges) if accurateEdgesLen > 0 else 0,
+                    'accurateEdgeStdev': statistics.stdev(accurateEdges) if accurateEdgesLen > 1 else 0,
+                    'accurateEdgeVariance': statistics.variance(accurateEdges) if accurateEdgesLen > 1 else 0,
+                    'inaccurateEdgeCount': inaccurateEdgesLen,
+                    'inaccurateEdgeMean': statistics.mean(inaccurateEdges) if inaccurateEdgesLen > 0 else 0,
+                    'inaccurateEdgeMedian': statistics.median(inaccurateEdges) if inaccurateEdgesLen > 0 else 0,
+                    'inaccurateEdgesStdev': statistics.stdev(inaccurateEdges) if inaccurateEdgesLen > 1 else 0,
+                    'inaccurateEdgesVariance': statistics.variance(inaccurateEdges) if inaccurateEdgesLen > 1 else 0
+                }
+                data.append(nodeData)
+
+    print("\nSaving data")
+    with open(outfile, 'w') as datafile:
+        datafile.write(json.dumps(data))
+    print("Finished")
     
 
 def main():
     edges, nodeList, edgeList = loadBaseGraph()
     weightedGraph = genWeightedGraph(edges, nodeList, 8)
-    catagoryNodes, catagoryEdges = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, .6, rebuild=True, clusterFunct=runUniqueMaxCliques)
-    testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, randomNodesToUse=3, edgeFraction=.5, cutoff=.2)
-    #TODO Create a function that compares a new graph's node to the catagory graph
-    ## Similar to current weight function, run between new node and each catagory
-    ## Predicted symptoms are weighted by both its weight in catagory graph and the drugs weight to the catagory
+    catagoryNodes, catagoryEdges = clusterWeightedGraph(weightedGraph, edges, nodeList, edgeList, .2, rebuild=True, clusterFunct=runUniqueMaxCliques)
+    testPrediction(edges, nodeList, catagoryNodes, catagoryEdges, randomNodesToUse=10, outfile='UniqueMaxCliques_20_data.json')
